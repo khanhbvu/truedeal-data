@@ -1,0 +1,46 @@
+name: Build blocklist
+on:
+  schedule:
+    - cron: "40 6 * * *"   # daily, ~2:40am New York
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download phishing list
+        run: |
+          curl -fsSL --retry 3 -o phishing.txt https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt \
+            || curl -fsSL --retry 3 -o phishing.txt https://phish.co.za/latest/phishing-domains-ACTIVE.txt
+          wc -l phishing.txt
+      - name: Download top-sites allowlist (optional)
+        continue-on-error: true
+        run: |
+          curl -fsSL --retry 2 -o tranco.zip https://tranco-list.eu/top-1m.csv.zip
+          unzip -p tranco.zip | head -n 10000 > tranco.csv || true
+          wc -l tranco.csv
+      - name: Build
+        run: node build-blocklist.js --in phishing.txt --tranco tranco.csv --out site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
