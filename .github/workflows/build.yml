@@ -36,8 +36,11 @@ jobs:
           curl -fsSL --retry 2 -o tranco.zip https://tranco-list.eu/top-1m.csv.zip
           unzip -p tranco.zip | head -n 10000 > tranco.csv || true
           wc -l tranco.csv
+      - name: Download Public Suffix List
+        continue-on-error: true
+        run: curl -fsSL --retry 3 -o psl.dat https://publicsuffix.org/list/public_suffix_list.dat && wc -l psl.dat
       - name: Build
-        run: node build-blocklist.js --in phishing.txt --tranco tranco.csv --out site
+        run: node build-blocklist.js --in phishing.txt --tranco tranco.csv --psl psl.dat --out site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
