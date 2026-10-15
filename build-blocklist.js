@@ -88,6 +88,7 @@ function build(lines, trancoDomains) {
   const allow = new Set(BUILTIN_ALLOW.concat(trancoDomains || []));
   const stats = { input: lines.length, invalid: 0, duplicate: 0, allowlisted: 0, platformRoot: 0, kept: 0 };
   const kept = new Set();
+  const skippedBy = new Map();
   for (const line of lines) {
     const h = normalize(line);
     if (!h) {
@@ -109,11 +110,15 @@ function build(lines, trancoDomains) {
     // user-owned subdomains on hosting platforms (evil.weebly.com).
     if (!onPlatform && (allow.has(reg) || underAny(h, [...BUILTIN_ALLOW]))) {
       stats.allowlisted++;
+      skippedBy.set(reg, (skippedBy.get(reg) || 0) + 1);
       continue;
     }
     kept.add(h);
   }
   stats.kept = kept.size;
+  // Which allowlisted domains swallowed the most entries? Big numbers usually mean a
+  // free-hosting service that should be added to USER_CONTENT_PLATFORMS.
+  stats.topSkipped = Object.fromEntries([...skippedBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40));
   const shards = new Map();
   for (const h of kept) {
     const x = hash16(h);
