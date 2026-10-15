@@ -24,6 +24,7 @@ const opt = (n, d) => {
 const IN = opt('--in');
 const OUT = opt('--out', 'site');
 const TRANCO = opt('--tranco');
+const PSL_FILE = opt('--psl'); // Public Suffix List (publicsuffix.org); strongly recommended
 const MIN_ENTRIES = Number(opt('--min', 1000)); // refuse to publish a suspiciously small list
 
 // Hosting platforms whose *subdomains* belong to different people. A listed subdomain
@@ -35,7 +36,14 @@ const USER_CONTENT_PLATFORMS = [
   'sites.google.com', 'carrd.co', 'notion.site', 'framer.website', 'framer.app', 'squarespace.com',
   'azurewebsites.net', 'cloudfront.net', 'amazonaws.com', 'appspot.com', 'repl.co', 'replit.app',
   'surge.sh', 'onrender.com', 'fly.dev', 'translate.goog', 'ipfs.io', 'dweb.link', 'jimdosite.com',
-  'yolasite.com', 'strikingly.com', 'mystrikingly.com', 'ueniweb.com', 'business.site', 'linktr.ee'
+  'yolasite.com', 'strikingly.com', 'mystrikingly.com', 'ueniweb.com', 'business.site', 'linktr.ee',
+  // Found via meta.json "topSkipped" (Oct 2026). Most are also on the Public Suffix List.
+  'duckdns.org', 'r2.dev', 'plesk.page', 'pantheonsite.io', 'ddns.net', 'sytes.net', 'tw1.ru', 'tmweb.ru',
+  'appdomain.cloud', 'filesusr.com', 'teachable.com', 'mybluehost.me', 'amplifyapp.com',
+  'blob.core.windows.net', 'web.core.windows.net', 'app.link', 'page.link', 'myqcloud.com', 'ngrok.io',
+  'ngrok-free.app', 'ngrok.app', 'beget.tech', 'ondigitalocean.app', 'digitaloceanspaces.com',
+  'myportfolio.com', 'secureserver.net', 'eu.org', 'sa.com', 'ru.com', 'us.com', 'za.com', 'cn.com',
+  'gb.net', 'no-ip.org', 'no-ip.com', 'hopto.org', 'zapto.org', 'serveo.net', 'loca.lt', 'trycloudflare.com'
 ];
 
 // Never blocked even if they appear in the feed (big sites, US retailers, payment providers).
@@ -48,24 +56,51 @@ const BUILTIN_ALLOW = [
   'netflix.com', 'x.com', 'twitter.com', 'linkedin.com', 'tiktok.com', 'reddit.com', 'wikipedia.org',
   'github.com', 'dropbox.com', 'adobe.com', 'zoom.us', 'yahoo.com', 'aol.com', 'outlook.com', 'bing.com',
   'cloudflare.com', 'docusign.com', 'docusign.net', 'irs.gov', 'ssa.gov', 'usa.gov'
-].concat(USER_CONTENT_PLATFORMS);
-
-const MULTI_SUFFIXES = [
-  'co.uk', 'org.uk', 'ac.uk', 'com.au', 'net.au', 'co.nz', 'co.jp', 'com.br', 'com.mx', 'co.in',
-  'com.cn', 'com.hk', 'com.sg', 'co.za', 'com.tr', 'com.ar'
 ];
 
-function registrable(h) {
-  for (const p of USER_CONTENT_PLATFORMS) if (h === p || h.endsWith('.' + p)) {
-    // Treat the platform like a public suffix: registrable = one label below it.
-    if (h === p) return p;
-    const rest = h.slice(0, -p.length - 1).split('.');
-    return rest[rest.length - 1] + '.' + p;
+// ---------------------------------------------------------------------------
+// Where does a "website" begin? Uses the Public Suffix List (the list browsers use),
+// plus USER_CONTENT_PLATFORMS. Without the PSL file, falls back to a heuristic that
+// knows country second-level domains like co.id, com.ng, co.kr.
+// ---------------------------------------------------------------------------
+const GENERIC_SLD = ['com', 'co', 'org', 'net', 'ac', 'edu', 'gov', 'go', 'or', 'ne', 'gob', 'mil', 'nic', 'ltd', 'plc', 'sch', 'biz', 'info', 'web', 'nom'];
+const psl = { rules: new Set(USER_CONTENT_PLATFORMS), wild: new Set(), exc: new Set(), loaded: false };
+
+function loadPsl(text) {
+  for (let line of String(text).split(/\r?\n/)) {
+    line = line.trim().split(/\s/)[0];
+    if (!line || line.startsWith('//')) continue;
+    line = line.toLowerCase();
+    if (line.startsWith('!')) psl.exc.add(line.slice(1));
+    else if (line.startsWith('*.')) psl.wild.add(line.slice(2));
+    else psl.rules.add(line);
   }
-  const parts = h.split('.');
-  if (parts.length <= 2) return h;
-  const last2 = parts.slice(-2).join('.');
-  return MULTI_SUFFIXES.includes(last2) ? parts.slice(-3).join('.') : last2;
+  psl.loaded = true;
+}
+
+function publicSuffix(h) {
+  const labels = h.split('.');
+  for (let i = 0; i < labels.length; i++) {
+    const cand = labels.slice(i).join('.');
+    if (psl.exc.has(cand)) return labels.slice(i + 1).join('.');
+    if (psl.rules.has(cand)) return cand;
+    if (i + 1 < labels.length && psl.wild.has(labels.slice(i + 1).join('.'))) return cand;
+  }
+  if (!psl.loaded && labels.length >= 2) {
+    const tld = labels[labels.length - 1];
+    const sld = labels[labels.length - 2];
+    if (tld.length === 2 && GENERIC_SLD.includes(sld)) return sld + '.' + tld;
+  }
+  return labels[labels.length - 1];
+}
+
+/** The "website" a hostname belongs to (example.co.id, evil.duckdns.org), or null if the
+ *  hostname is itself a public suffix / platform (co.id, duckdns.org). */
+function registrable(h) {
+  const ps = publicSuffix(h);
+  if (h === ps) return null;
+  const rest = h.slice(0, -ps.length - 1).split('.');
+  return rest[rest.length - 1] + '.' + ps;
 }
 
 function normalize(line) {
@@ -99,16 +134,15 @@ function build(lines, trancoDomains) {
       stats.duplicate++;
       continue;
     }
-    // The platform itself, or a direct listing of a platform root: drop.
-    if (USER_CONTENT_PLATFORMS.includes(h)) {
+    // A public suffix or hosting platform itself (co.id, duckdns.org, weebly.com): drop.
+    const reg = registrable(h);
+    if (!reg) {
       stats.platformRoot++;
       continue;
     }
-    const reg = registrable(h);
-    const onPlatform = underAny(h, USER_CONTENT_PLATFORMS);
-    // A popular/allowlisted site (or any subdomain of one) is never blocked, except
-    // user-owned subdomains on hosting platforms (evil.weebly.com).
-    if (!onPlatform && (allow.has(reg) || underAny(h, [...BUILTIN_ALLOW]))) {
+    // A popular/allowlisted website (or any subdomain of it) is never blocked. Subdomains
+    // on hosting platforms are separate websites (reg = evil.duckdns.org), so they're kept.
+    if (allow.has(reg) || underAny(h, BUILTIN_ALLOW)) {
       stats.allowlisted++;
       skippedBy.set(reg, (skippedBy.get(reg) || 0) + 1);
       continue;
@@ -136,7 +170,8 @@ function readTranco(file) {
     .split(/\r?\n/)
     .map((l) => (l.includes(',') ? l.split(',')[1] : l).trim().toLowerCase())
     .filter(Boolean)
-    .map((d) => registrable(d.replace(/^www\./, '')));
+    .map((d) => registrable(d.replace(/^www\./, '')))
+    .filter(Boolean);
 }
 
 function writeSite(out, result, sources) {
@@ -180,13 +215,15 @@ function writeSite(out, result, sources) {
   return meta;
 }
 
-module.exports = { normalize, registrable, hash16, build, writeSite };
+module.exports = { normalize, registrable, publicSuffix, loadPsl, hash16, build, writeSite };
 
 if (require.main === module) {
   if (!IN || !fs.existsSync(IN)) {
     console.error('Usage: node build-blocklist.js --in phishing-domains-ACTIVE.txt [--tranco top.csv] --out site');
     process.exit(1);
   }
+  if (PSL_FILE && fs.existsSync(PSL_FILE)) loadPsl(fs.readFileSync(PSL_FILE, 'utf8'));
+  console.log(`Public Suffix List: ${psl.loaded ? psl.rules.size + psl.wild.size + ' rules' : 'not provided (heuristic fallback)'}`);
   const lines = fs.readFileSync(IN, 'utf8').split(/\r?\n/);
   const tranco = readTranco(TRANCO);
   const result = build(lines, tranco);
@@ -198,7 +235,8 @@ if (require.main === module) {
   }
   const meta = writeSite(OUT, result, {
     phishingDatabase: 'https://github.com/Phishing-Database/Phishing.Database (phishing-domains-ACTIVE.txt)',
-    allowlist: tranco.length ? 'Tranco top sites + built-in list' : 'built-in list'
+    allowlist: tranco.length ? 'Tranco top sites + built-in list' : 'built-in list',
+    publicSuffixList: psl.loaded ? 'https://publicsuffix.org/list/public_suffix_list.dat' : 'heuristic fallback'
   });
   console.log(`Wrote ${OUT}/ (4096 shards, ${meta.entries} entries)`);
 }
